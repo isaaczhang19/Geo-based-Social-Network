@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 
+	"cloud.google.com/go/bigtable"
 	"cloud.google.com/go/storage"
 	"github.com/olivere/elastic"
 	"github.com/pborman/uuid"
@@ -22,6 +23,9 @@ const (
 
 	ES_URL      = "http://35.225.243.213:9200"
 	BUCKET_NAME = "around-posted-images"
+
+	BIGTABLE_PROJECT_ID = "around-274216"
+	BT_INSTANCE         = "around-post"
 )
 
 type Location struct {
@@ -124,6 +128,30 @@ func saveToES(post *Post, id string) error {
 	return nil
 }
 
+// save to BT
+func saveToBT(p *Post, id string) error {
+	ctx := context.Background()
+	bt_client, err := bigtable.NewClient(ctx, BIGTABLE_PROJECT_ID, BT_INSTANCE)
+	if err != nil {
+		return err
+	}
+
+	tbl := bt_client.Open("post")
+	mut := bigtable.NewMutation()
+	t := bigtable.Now()
+	mut.Set("post", "user", t, []byte(p.User))
+	mut.Set("post", "message", t, []byte(p.Message))
+	mut.Set("location", "lat", t, []byte(strconv.FormatFloat(p.Location.Lat, 'f', -1, 64)))
+	mut.Set("location", "lon", t, []byte(strconv.FormatFloat(p.Location.Lon, 'f', -1, 64)))
+	err = tbl.Apply(ctx, id, mut)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Post is saved to BigTable: %s\n", p.Message)
+	return nil
+
+}
+
 // efficiency query
 func readFromES(lat, lon float64, ran string) ([]Post, error) {
 	client, err := elastic.NewClient(elastic.SetURL(ES_URL), elastic.SetSniff(false))
@@ -156,6 +184,28 @@ func readFromES(lat, lon float64, ran string) ([]Post, error) {
 		}
 	}
 	return posts, nil
+}
+
+// Save a post to BigTable
+func saveToBigTable(p *Post, id string) error {
+	ctx := context.Background()
+	bt_client, err := bigtable.NewClient(ctx, BIGTABLE_PROJECT_ID, BT_INSTANCE)
+	if err != nil {
+		return err
+	}
+	tbl := bt_client.Open("post")
+	mut := bigtable.NewMutation()
+	t := bigtable.Now()
+	mut.Set("post", "user", t, []byte(p.User))
+	mut.Set("post", "message", t, []byte(p.Message))
+	mut.Set("location", "lat", t, []byte(strconv.FormatFloat(p.Location.Lat, 'f', -1, 64)))
+	mut.Set("location", "lon", t, []byte(strconv.FormatFloat(p.Location.Lon, 'f', -1, 64)))
+	err = tbl.Apply(ctx, id, mut)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Post is saved to BigTable: %s\n", p.Message)
+	return nil
 }
 
 func handlerSearch(w http.ResponseWriter, r *http.Request) {
@@ -232,4 +282,11 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fmt.Printf("Saved one post to ElasticSearch: %s", p.Message)
+
+	err = saveToBT(p, id)
+	if err != nil {
+		http.Error(w, "Failed to save post to BigTable", http.StatusInternalServerError)
+		fmt.Printf("Failed to save post to BigTable %v.\n", err)
+		return
+	}
 }
